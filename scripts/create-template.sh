@@ -23,6 +23,8 @@ WITH_DOCKER=true
 WITH_POSTGRES=true
 # By default do not enable EF sensitive data logging in generated dev appsettings
 ENABLE_EF_SENSITIVE=false
+# By default generate repository interfaces + EF implementations
+WITH_REPO=true
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -40,6 +42,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-postgres)
       WITH_POSTGRES=false
+      shift
+      ;;
+    --no-repo)
+      WITH_REPO=false
       shift
       ;;
     --enable-ef-sensitive)
@@ -120,11 +126,15 @@ echo -e "${GREEN}✓ Folder structure generated${NC}"
 
 cat > "$OUTDIR/backend/src/Api/Program.cs" << 'EOF'
 using Microsoft.AspNetCore.Mvc;
+using Api.Configurations;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
+// Register project services (repositories, application services, etc.)
+// Implementations are added via generated extension in `Api/Configurations/ServiceCollectionExtensions.cs`
+builder.Services.AddProjectServices();
 
 var app = builder.Build();
 app.UseSwagger();
@@ -222,6 +232,133 @@ public class AuthService
 }
 EOF
 
+fi
+
+# -------------------------------------------------------------------
+# Generate repository & service skeletons and update Program.cs registrations
+# -------------------------------------------------------------------
+if [ "$WITH_REPO" = true ]; then
+  echo -e "${BLUE}→ Adding repository + service skeletons and wiring DI...${NC}"
+
+  # Interface in Core/Interfaces
+  cat > "$OUTDIR/backend/src/Core/Interfaces/IUserRepository.cs" <<'EOF'
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace Core.Interfaces;
+
+public interface IUserRepository
+{
+    Task<User?> GetByIdAsync(Guid id, CancellationToken ct = default);
+    Task AddAsync(User user, CancellationToken ct = default);
+}
+EOF
+
+  # EF implementation
+  cat > "$OUTDIR/backend/src/Infrastructure/Persistence/RepositoryImpl/EfUserRepository.cs" <<'EOF'
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+using Core.Interfaces;
+using Infrastructure.Persistence;
+
+namespace Infrastructure.Persistence.RepositoryImpl;
+
+public class EfUserRepository : IUserRepository
+{
+    private readonly AppDbContext _db;
+    public EfUserRepository(AppDbContext db) => _db = db;
+
+    public Task<User?> GetByIdAsync(Guid id, CancellationToken ct = default) =>
+        _db.Users.FindAsync(new object[] { id }, ct).AsTask();
+
+    public Task AddAsync(User user, CancellationToken ct = default)
+    {
+        _db.Users.Add(user);
+        return _db.SaveChangesAsync(ct);
+    }
+}
+EOF
+
+  # Service interface
+  cat > "$OUTDIR/backend/src/Application/Services/IUserService.cs" <<'EOF'
+using System;
+using System.Threading.Tasks;
+
+namespace Application.Services;
+
+public interface IUserService
+{
+    Task<object?> GetUserAsync(Guid id);
+}
+EOF
+
+  # Service implementation
+  cat > "$OUTDIR/backend/src/Application/Services/UserService.cs" <<'EOF'
+using System;
+using System.Threading.Tasks;
+using Core.Interfaces;
+
+namespace Application.Services;
+
+public class UserService : IUserService
+{
+    private readonly IUserRepository _repo;
+    public UserService(IUserRepository repo) => _repo = repo;
+
+    public async Task<object?> GetUserAsync(Guid id)
+    {
+        var user = await _repo.GetByIdAsync(id);
+        if (user == null) return null;
+        return new { user.Id, user.Email };
+    }
+}
+EOF
+
+  # Re-generate Program.cs to include DI registrations
+  # Generate ServiceCollectionExtensions to register services/repositories
+  mkdir -p "$OUTDIR/backend/src/Api/Configurations"
+  cat > "$OUTDIR/backend/src/Api/Configurations/ServiceCollectionExtensions.cs" <<'EOF'
+using Microsoft.Extensions.DependencyInjection;
+using Core.Interfaces;
+using Infrastructure.Persistence.RepositoryImpl;
+using Application.Services;
+
+namespace Api.Configurations;
+
+public static class ServiceCollectionExtensions
+{
+    public static IServiceCollection AddProjectServices(this IServiceCollection services)
+    {
+        // Register repository + service implementations
+        services.AddScoped<IUserRepository, EfUserRepository>();
+        services.AddScoped<IUserService, UserService>();
+        return services;
+    }
+}
+EOF
+
+  echo -e "${GREEN}✓ repository + service skeletons generated and ServiceCollectionExtensions created${NC}"
+else
+  echo -e "${YELLOW}→ Skipping repository/service generation (WITH_REPO=false)${NC}"
+
+  # Still generate a no-op ServiceCollectionExtensions so Program.cs can call AddProjectServices safely
+  mkdir -p "$OUTDIR/backend/src/Api/Configurations"
+  cat > "$OUTDIR/backend/src/Api/Configurations/ServiceCollectionExtensions.cs" <<'EOF'
+using Microsoft.Extensions.DependencyInjection;
+
+namespace Api.Configurations;
+
+public static class ServiceCollectionExtensions
+{
+    public static IServiceCollection AddProjectServices(this IServiceCollection services)
+    {
+        // Repository/service generation was skipped; add registrations here as needed.
+        return services;
+    }
+}
+EOF
 fi
 
 # -------------------------------------------------------------------
