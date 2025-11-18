@@ -21,6 +21,8 @@ WITH_AUTH=true
 WITH_MIGRATIONS=true
 WITH_DOCKER=true
 WITH_POSTGRES=true
+# By default do not enable EF sensitive data logging in generated dev appsettings
+ENABLE_EF_SENSITIVE=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -40,8 +42,12 @@ while [[ $# -gt 0 ]]; do
       WITH_POSTGRES=false
       shift
       ;;
+    --enable-ef-sensitive)
+      ENABLE_EF_SENSITIVE=true
+      shift
+      ;;
     --help)
-      echo "Usage: create_template.sh [--no-auth] [--no-migrations] [--no-docker] [--no-postgres]"
+      echo "Usage: create_template.sh [--no-auth] [--no-migrations] [--no-docker] [--no-postgres] [--enable-ef-sensitive]"
       exit 0
       ;;
     *)
@@ -263,8 +269,11 @@ echo -e "${GREEN}✓ .env.template generated${NC}"
 # -------------------------------------------------------------------
 # Generate development appsettings and migrate script if migrations enabled
 # -------------------------------------------------------------------
-if [ "$WITH_MIGRATIONS" = true ]; then
-  cat > "$OUTDIR/backend/src/Api/appsettings.Development.json" <<'EOF'
+# Always generate appsettings.Development.json (includes EFCore sensitive-data flag)
+
+mkdir -p "$OUTDIR/backend/src/Api"
+# Generate Development appsettings with configurable EF sensitive logging
+cat > "$OUTDIR/backend/src/Api/appsettings.Development.json" <<EOF
 {
   "ConnectionStrings": {
     "DefaultConnection": "Host=localhost;Port=5432;Database=quizziapp;Username=postgres;Password=postgres"
@@ -273,10 +282,36 @@ if [ "$WITH_MIGRATIONS" = true ]; then
     "MinimumLevel": { "Default": "Debug", "Override": { "Microsoft": "Information", "Microsoft.EntityFrameworkCore.Database.Command": "Information" } },
     "WriteTo": [ { "Name": "Console" }, { "Name": "File", "Args": { "path": "Logs/quizziapp-.txt", "rollingInterval": "Day" } } ]
   },
-  "EFCore": { "EnableSensitiveDataLogging": true }
+  "EFCore": { "EnableSensitiveDataLogging": %s }
 }
 EOF
 
+# Replace placeholder with actual boolean value
+if [ "$ENABLE_EF_SENSITIVE" = true ]; then
+  sed -i.bak 's/%s/true/' "$OUTDIR/backend/src/Api/appsettings.Development.json" && rm "$OUTDIR/backend/src/Api/appsettings.Development.json.bak"
+else
+  sed -i.bak 's/%s/false/' "$OUTDIR/backend/src/Api/appsettings.Development.json" && rm "$OUTDIR/backend/src/Api/appsettings.Development.json.bak"
+fi
+
+echo -e "${GREEN}✓ appsettings.Development.json generated (EF sensitive = $ENABLE_EF_SENSITIVE)${NC}"
+
+# Always generate a production appsettings with sensitive logging disabled
+cat > "$OUTDIR/backend/src/Api/appsettings.Production.json" <<'EOF'
+{
+  "ConnectionStrings": {
+    "DefaultConnection": "Host=localhost;Port=5432;Database=quizziapp;Username=postgres;Password=postgres"
+  },
+  "Serilog": {
+    "MinimumLevel": { "Default": "Information", "Override": { "Microsoft": "Warning", "Microsoft.EntityFrameworkCore.Database.Command": "Warning" } },
+    "WriteTo": [ { "Name": "File", "Args": { "path": "Logs/quizziapp-.txt", "rollingInterval": "Day" } } ]
+  },
+  "EFCore": { "EnableSensitiveDataLogging": false }
+}
+EOF
+
+echo -e "${GREEN}✓ appsettings.Production.json generated (EF sensitive = false)${NC}"
+
+if [ "$WITH_MIGRATIONS" = true ]; then
   mkdir -p "$OUTDIR/backend/scripts"
   cat > "$OUTDIR/backend/scripts/migrate.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -287,7 +322,7 @@ dotnet tool restore || true
 dotnet ef database update --project src/Api/Api.csproj --startup-project src/Api/ --no-build
 EOF
   chmod +x "$OUTDIR/backend/scripts/migrate.sh"
-  echo -e "${GREEN}✓ appsettings.Development.json and migrate.sh generated${NC}"
+  echo -e "${GREEN}✓ migrate.sh generated${NC}"
 fi
 
 # -------------------------------------------------------------------
@@ -389,3 +424,11 @@ cd backend
 dotnet restore
 dotnet build
 dotnet run --project src/Api/Api.csproj
+```
+
+## Notes
+
+- The generated template includes `.env.template` and `appsettings.{Development,Production}.json`.
+- `EFCore:EnableSensitiveDataLogging` in `appsettings.Development.json` is controlled by the generator flag `--enable-ef-sensitive` and should be disabled in production.
+
+EOF
