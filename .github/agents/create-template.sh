@@ -19,6 +19,8 @@ echo -e "${BLUE}=== React + .NET 10 Clean Architecture Project Generator ===${NC
 # -------------------------------------------------------------------
 WITH_AUTH=true
 WITH_MIGRATIONS=true
+WITH_DOCKER=true
+WITH_POSTGRES=true
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -30,8 +32,16 @@ while [[ $# -gt 0 ]]; do
       WITH_MIGRATIONS=false
       shift
       ;;
+    --no-docker)
+      WITH_DOCKER=false
+      shift
+      ;;
+    --no-postgres)
+      WITH_POSTGRES=false
+      shift
+      ;;
     --help)
-      echo "Usage: create_template.sh [--no-auth] [--no-migrations]"
+      echo "Usage: create_template.sh [--no-auth] [--no-migrations] [--no-docker] [--no-postgres]"
       exit 0
       ;;
     *)
@@ -227,6 +237,110 @@ public class AppDbContext : DbContext
 }
 EOF
 
+fi
+
+# -------------------------------------------------------------------
+# Write .env.template for generated project
+# -------------------------------------------------------------------
+cat > "$OUTDIR/.env.template" <<'EOF'
+# Backend
+PG_HOST=localhost
+PG_PORT=5432
+PG_DATABASE=quizziapp
+PG_USER=postgres
+PG_PASSWORD=postgres
+
+# JWT secret - replace in production
+JWT_KEY={{JWT_SECRET}}
+JWT_ISSUER=QuizziApp
+
+# App environment: Development or Production
+ASPNETCORE_ENVIRONMENT=Development
+EOF
+
+echo -e "${GREEN}✓ .env.template generated${NC}"
+
+# -------------------------------------------------------------------
+# Generate development appsettings and migrate script if migrations enabled
+# -------------------------------------------------------------------
+if [ "$WITH_MIGRATIONS" = true ]; then
+  cat > "$OUTDIR/backend/src/Api/appsettings.Development.json" <<'EOF'
+{
+  "ConnectionStrings": {
+    "DefaultConnection": "Host=localhost;Port=5432;Database=quizziapp;Username=postgres;Password=postgres"
+  },
+  "Serilog": {
+    "MinimumLevel": { "Default": "Debug", "Override": { "Microsoft": "Information", "Microsoft.EntityFrameworkCore.Database.Command": "Information" } },
+    "WriteTo": [ { "Name": "Console" }, { "Name": "File", "Args": { "path": "Logs/quizziapp-.txt", "rollingInterval": "Day" } } ]
+  },
+  "EFCore": { "EnableSensitiveDataLogging": true }
+}
+EOF
+
+  mkdir -p "$OUTDIR/backend/scripts"
+  cat > "$OUTDIR/backend/scripts/migrate.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ -f .env ]; then export $(grep -v '^#' .env | xargs); fi
+export ASPNETCORE_ENVIRONMENT=${ASPNETCORE_ENVIRONMENT:-Development}
+dotnet tool restore || true
+dotnet ef database update --project src/Api/Api.csproj --startup-project src/Api/ --no-build
+EOF
+  chmod +x "$OUTDIR/backend/scripts/migrate.sh"
+  echo -e "${GREEN}✓ appsettings.Development.json and migrate.sh generated${NC}"
+fi
+
+# -------------------------------------------------------------------
+# Docker compose and smoke test
+# -------------------------------------------------------------------
+if [ "$WITH_DOCKER" = true ]; then
+  cat > "$OUTDIR/docker-compose.yml" <<'EOF'
+version: '3.8'
+services:
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: quizziapp
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+  backend:
+    build: ./backend
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ConnectionStrings__DefaultConnection=Host=db;Database=quizziapp;Username=postgres;Password=postgres
+    depends_on:
+      - db
+    ports:
+      - "5000:80"
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+volumes:
+  db_data:
+EOF
+
+  mkdir -p "$OUTDIR/scripts"
+  cat > "$OUTDIR/scripts/smoke-test.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "Building backend..."
+cd backend
+dotnet restore
+dotnet build
+./scripts/migrate.sh
+echo "Starting backend (in background)..."
+dotnet run --project src/Api/Api.csproj --urls "http://localhost:5000" > ../backend_run.log 2>&1 & echo $! > ../backend.pid
+sleep 2
+curl -fsS http://localhost:5000/api/health || { cat ../backend_run.log; exit 1; }
+echo "Health OK"
+EOF
+  chmod +x "$OUTDIR/scripts/smoke-test.sh"
+  echo -e "${GREEN}✓ docker-compose and smoke-test script generated${NC}"
 fi
 
 # -------------------------------------------------------------------
