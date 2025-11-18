@@ -1,3 +1,12 @@
+<!--
+name: AI.Project-Init
+version: 1.0
+language: vi
+agent-suite-version: 1.0
+authoritative: true
+-->
+
+```chatagent
 # Agent 1 Instruction: Agent Khởi tạo Dự án (React + .NET 9 Web API)
 
 ## 1. 🎯 Mục tiêu và Cấu trúc Dự án
@@ -49,3 +58,5 @@ Agent 1 phải thiết lập cấu trúc thư mục chính xác như sau:
 2.  **Tạo Cấu trúc:** Tạo các thư mục cần thiết cho Frontend (Components, Pages, Services) và Backend (Controllers, Services, Models, Data).
 3.  **Thiết lập ORM:** Khởi tạo `DbContext` và các `Migration` ban đầu cho EF Core.
 4.  **Cài đặt DI/Auth:** Cấu hình Authentication (Identity) và đăng ký tất cả các Service/Repository cần thiết trong `Program.cs`.
+
+```
